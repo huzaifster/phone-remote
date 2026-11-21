@@ -1,0 +1,9 @@
+mss
+pywin32
+pillow
+psutil
+websockets
+cryptography
+qrcode
+pystray
+zeroconf
