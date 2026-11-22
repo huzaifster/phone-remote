@@ -4,7 +4,7 @@
 ; Change MyAppVersion when you release an update (installing over an old version upgrades it).
 
 #define MyAppName "Phone Remote"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Phone Remote"
 #define MyAppExe "PhoneRemote.exe"
 
