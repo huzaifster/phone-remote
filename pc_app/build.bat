@@ -70,7 +70,7 @@ if exist dist (
 
 echo.
 echo Building PhoneRemote.exe. This takes a few minutes...
-"%PY%" -m PyInstaller --clean --noconsole --onefile --name PhoneRemote --icon icon.ico --add-data "icon.ico;." --hidden-import pystray._win32 --collect-all cryptography --collect-all zeroconf %EXTRA% app.py
+"%PY%" -m PyInstaller --clean --noconsole --onefile --name PhoneRemote --icon icon.ico --add-data "icon.ico;." --hidden-import pystray._win32 --hidden-import win32crypt --collect-all cryptography --collect-all zeroconf %EXTRA% app.py
 if errorlevel 1 (
   echo.
   echo BUILD FAILED. Scroll up to read the error.
