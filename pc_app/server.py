@@ -49,6 +49,13 @@ def emit(kind: str, **data) -> None:
             pass
 
 
+def clean_name(raw) -> str:
+    """A phone's name is typed by the phone, so strip control characters and tidy it up."""
+    text = "".join(ch for ch in str(raw) if ch.isprintable())
+    text = " ".join(text.split())[:40]
+    return text or "Phone"
+
+
 def start_pairing() -> str:
     """Open a 2-minute pairing window and return the text to put in the QR code."""
     global HOST_IP
@@ -225,7 +232,7 @@ async def handle_pairing(ws, ip: str) -> None:
         await ws.close(1008, "Pairing failed")
         return
 
-    name = str(msg.get("name", "Phone"))[:40]
+    name = clean_name(msg.get("name", "Phone"))
     cert_pem, key_pem, fp = security.issue_client_cert(name)
     devices.add(fp, name)
     await ws.send(json.dumps({"type": "paired", "cert": cert_pem, "key": key_pem}))
@@ -237,6 +244,14 @@ async def handle_pairing(ws, ip: str) -> None:
 async def handler(ws) -> None:
     ip = ws.remote_address[0]
     if not ipaddress.ip_address(ip).is_private or limiter.locked(ip):
+        await ws.close(1008, "Not allowed")
+        return
+
+    # The phone app never sends an Origin header; web pages in a browser always do.
+    # Refusing those means a website can't even try to talk to this agent.
+    request = getattr(ws, "request", None)
+    if request is not None and request.headers.get("Origin"):
+        limiter.fail(ip)
         await ws.close(1008, "Not allowed")
         return
 

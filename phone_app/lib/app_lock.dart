@@ -3,9 +3,29 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
+
+const _pbkdf2Iterations = 200000;
+
+/// PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte result. Runs in a background isolate (see compute).
+List<int> _pbkdf2Sync(Map<String, Object> args) {
+  final salt = args['salt'] as List<int>;
+  final pin = utf8.encode(args['pin'] as String);
+  final iterations = args['iterations'] as int;
+  final hmac = Hmac(sha256, pin);
+  var u = hmac.convert([...salt, 0, 0, 0, 1]).bytes;
+  final t = List<int>.from(u);
+  for (var i = 1; i < iterations; i++) {
+    u = hmac.convert(u).bytes;
+    for (var j = 0; j < t.length; j++) {
+      t[j] ^= u[j];
+    }
+  }
+  return t;
+}
 
 class AppLock {
   static const _storage = FlutterSecureStorage();
@@ -14,6 +34,7 @@ class AppLock {
   static const _kBio = 'lock_bio';
   static const _kFails = 'lock_fails';
   static const _kUntil = 'lock_until';
+  static const _kKdf = 'lock_kdf'; // missing = PIN saved by an older version of the app
   static final _auth = LocalAuthentication();
 
   static Future<bool> isEnabled() async => (await _storage.read(key: _kHash)) != null;
@@ -21,8 +42,12 @@ class AppLock {
   static Future<void> setBiometric(bool on) =>
       _storage.write(key: _kBio, value: on ? '1' : '0');
 
-  /// Slow-ish hash so a stolen copy of the stored value is hard to brute-force.
-  static List<int> _derive(List<int> salt, String pin) {
+  /// Standard slow hash (PBKDF2) so a stolen copy of the stored value is hard to brute-force.
+  static Future<List<int>> _derive(List<int> salt, String pin) => compute(
+      _pbkdf2Sync, <String, Object>{'salt': salt, 'pin': pin, 'iterations': _pbkdf2Iterations});
+
+  /// How PINs were hashed before. Only used to check an old PIN once, then it is upgraded.
+  static List<int> _deriveLegacy(List<int> salt, String pin) {
     var d = sha256.convert([...salt, ...utf8.encode(pin)]).bytes;
     for (var i = 0; i < 20000; i++) {
       d = sha256.convert([...d, ...salt]).bytes;
@@ -34,12 +59,13 @@ class AppLock {
     final rng = Random.secure();
     final salt = List<int>.generate(16, (_) => rng.nextInt(256));
     await _storage.write(key: _kSalt, value: base64Encode(salt));
-    await _storage.write(key: _kHash, value: base64Encode(_derive(salt, pin)));
+    await _storage.write(key: _kHash, value: base64Encode(await _derive(salt, pin)));
+    await _storage.write(key: _kKdf, value: 'pbkdf2-sha256-$_pbkdf2Iterations');
     await _resetFails();
   }
 
   static Future<void> clear() async {
-    for (final k in [_kHash, _kSalt, _kBio, _kFails, _kUntil]) {
+    for (final k in [_kHash, _kSalt, _kBio, _kFails, _kUntil, _kKdf]) {
       await _storage.delete(key: k);
     }
   }
@@ -62,14 +88,21 @@ class AppLock {
     final hashB64 = await _storage.read(key: _kHash);
     if (saltB64 == null || hashB64 == null) return true;
 
+    final legacy = (await _storage.read(key: _kKdf)) == null;
     final expected = base64Decode(hashB64);
-    final actual = _derive(base64Decode(saltB64), pin);
+    final actual = legacy
+        ? _deriveLegacy(base64Decode(saltB64), pin)
+        : await _derive(base64Decode(saltB64), pin);
     var diff = expected.length ^ actual.length;
     for (var i = 0; i < expected.length && i < actual.length; i++) {
       diff |= expected[i] ^ actual[i];
     }
     if (diff == 0) {
-      await _resetFails();
+      if (legacy) {
+        await setPin(pin); // quietly re-save an old PIN with the stronger hash
+      } else {
+        await _resetFails();
+      }
       return true;
     }
 
